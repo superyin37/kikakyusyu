@@ -1,0 +1,28 @@
+# Python-generated files
+__pycache__/
+*.py[oc]
+build/
+dist/
+wheels/
+*.egg-info
+chroma_db/*
+# Virtual environments
+.venv
+.ollama
+.ssh
+.local
+.dotnet
+.config
+.cache
+.vscode-server
+.bash_logout
+.bashrc
+.bash_history
+.profile
+.sudo_as_admin_successful
+.wget-hsts
+.zshrc
+.lesshst
+.gitconfig
+chroma_db/*
+rag/chroma_db/*
