@@ -18,11 +18,132 @@ app = FastAPI()
 
 import chromadb
 
-client = chromadb.PersistentClient(path="./chroma_db")
-col = client.get_collection("knowledge")
+# ---- Global paths ----
+BASE_DIR = Path(__file__).resolve().parent
+RAG_DIR = BASE_DIR.parent / "rag"
+CHROMA_PATH = BASE_DIR / "chroma_db"
 
-print(col.count())   # ← チャンク数
-print(col.peek(3))   # ← 最初の3件を表示
+GOMI_JSONL = RAG_DIR / "rag_docs_merged.jsonl"
+AREA_JSONL = RAG_DIR / "area.jsonl"
+
+# ---- 1. Initialize ChromaDB client (only once) ----
+chroma_client = chromadb.PersistentClient(path=str(CHROMA_PATH))
+
+
+# ---- 2. Utility: get existing collection or build if missing ----
+def get_or_build_collection(
+    client: chromadb.Client,
+    name: str,
+    docs: list[str] | None = None,
+    meta: list[dict] | None = None,
+):
+    """
+    Try to get an existing collection.
+    If it does not exist and docs/meta are provided, build the collection.
+    Otherwise, raise an error.
+    """
+    try:
+        return client.get_collection(name)
+    except Exception:
+        if docs is None or meta is None:
+            raise RuntimeError(
+                f"Collection '{name}' not found and no data provided to build it."
+            )
+        return build_chroma(docs, meta, name=name)
+
+
+# =========================
+# gomi collection (garbage rules)
+# =========================
+
+# Load documents and metadata from JSONL
+gomi_docs, gomi_meta = load_jsonl(
+    os.path.abspath(GOMI_JSONL),
+    key="品名",
+)
+
+# Get existing collection or build it if missing
+gomi_collection = get_or_build_collection(
+    client=chroma_client,
+    name="gomi",
+    docs=gomi_docs,
+    meta=gomi_meta,
+)
+
+# Extract item names for exact / candidate matching
+known_items = [m.get("品名", "") for m in gomi_meta]
+
+
+# =========================
+# area collection (location / schedule)
+# =========================
+
+# Load documents and metadata from JSONL
+area_docs, area_meta = load_jsonl(
+    os.path.abspath(AREA_JSONL),
+    key="町名",
+)
+
+# Get existing collection or build it if missing
+area_collection = get_or_build_collection(
+    client=chroma_client,
+    name="area",
+    docs=area_docs,
+    meta=area_meta,
+)
+
+
+# =========================
+# knowledge collection (user-provided knowledge)
+# =========================
+
+# Only try to load the collection; never rebuild automatically
+try:
+    knowledge_collection = chroma_client.get_collection("knowledge")
+except Exception:
+    knowledge_collection = None
+
+
+# =========================
+# Debug output (optional)
+# =========================
+
+print("gomi collection size:", gomi_collection.count())
+print("area collection size:", area_collection.count())
+if knowledge_collection:
+    print("knowledge collection size:", knowledge_collection.count())
+else:
+    print("knowledge collection not found")
+
+# # ==== DB 構築 ==== (gomi/area はそのまま)
+# gomi_docs, gomi_meta = load_jsonl(
+#     os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "rag", "rag_docs_merged.jsonl")),
+#     key="品名"
+# )
+# area_docs, area_meta = load_jsonl(
+#     os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "rag", "area.jsonl")),
+#     key="町名"
+# )
+
+# gomi_collection = build_chroma(gomi_docs, gomi_meta, name="gomi")
+# area_collection = build_chroma(area_docs, area_meta, name="area")
+# known_items = [m.get("品名", "") for m in gomi_meta]
+
+# # ← ここを追加！
+# import chromadb
+# client = chromadb.PersistentClient(path="./chroma_db")
+# try:
+#     knowledge_collection = client.get_collection("knowledge")
+# except:
+#     knowledge_collection = None
+
+
+
+# client = chromadb.PersistentClient(path="./chroma_db")
+# col = client.get_or_create_collection("knowledge")
+
+# print(col.count())   # ← チャンク数
+# print(col.peek(3))   # ← 最初の3件を表示
 
 
 # ==== ログ保存用ユーティリティ ====
@@ -39,27 +160,7 @@ def save_log(user_input: str, assistant_output: str, mode: str):
     with open(LOG_FILE, "a", encoding="utf-8") as f:
         f.write(json.dumps(log, ensure_ascii=False) + "\n")
 
-# ==== DB 構築 ==== (gomi/area はそのまま)
-gomi_docs, gomi_meta = load_jsonl(
-    os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "rag", "rag_docs_merged.jsonl")),
-    key="品名"
-)
-area_docs, area_meta = load_jsonl(
-    os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "rag", "area.jsonl")),
-    key="町名"
-)
 
-gomi_collection = build_chroma(gomi_docs, gomi_meta, name="gomi")
-area_collection = build_chroma(area_docs, area_meta, name="area")
-known_items = [m.get("品名", "") for m in gomi_meta]
-
-# ← ここを追加！
-import chromadb
-client = chromadb.PersistentClient(path="./chroma_db")
-try:
-    knowledge_collection = client.get_collection("knowledge")
-except:
-    knowledge_collection = None
 
 
 # ==== Blocking モード ====
@@ -74,6 +175,9 @@ async def rag_respond(req: PromptRequest):
         area_meta=area_meta,
         top_k=2
     )
+    print("\n===== DEBUG: FULL PROMPT START =====\n")
+    print(rag_prompt)
+    print("\n===== DEBUG: FULL PROMPT END =====\n")
 
     reply = ask_ollama(rag_prompt)
 
@@ -99,11 +203,14 @@ async def rag_respond_stream(req: PromptRequest):
         area_meta=area_meta,
         top_k=2
     )
+    print("\n===== DEBUG: FULL PROMPT START =====\n")
+    print(rag_prompt)
+    print("\n===== DEBUG: FULL PROMPT END =====\n")
 
     def stream_gen():
         collected = ""
         stream = ollama.chat(
-            model="hf.co/mmnga/Llama-3.1-Swallow-8B-Instruct-v0.5-gguf:latest",
+            model="swallow:latest",
             messages=[{"role": "user", "content": rag_prompt}],
             stream=True
         )
@@ -119,7 +226,7 @@ async def rag_respond_stream(req: PromptRequest):
     return StreamingResponse(
         stream_gen(),
         media_type="text/plain",
-        headers={"X-References": json.dumps(references, ensure_ascii=False)}
+        headers={"X-References": json.dumps(references, ensure_ascii=True)}
     )
 
 if __name__ == "__main__":

@@ -152,7 +152,7 @@ def query_chroma(collection, query, n=3):
 #     proc = subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True)
 #     out, _ = proc.communicate(prompt)
 #     return out
-def ask_ollama(rag_prompt, model="hf.co/mmnga/Llama-3.1-Swallow-8B-Instruct-v0.5-gguf:latest"):
+def ask_ollama(rag_prompt, model="swallow:latest"):
     """
     Ollama モデルに RAG プロンプトを渡して応答を返す。
     system プロンプトを固定で与え、セキュリティ強化する。
@@ -241,8 +241,9 @@ def rag_retrieve_extended(
         if gomi_collection:
             for noun in nouns:
                 results = gomi_collection.query(query_texts=[noun], n_results=1)
-                if results and results["metadatas"]:
-                    combined_hits.append(results["metadatas"][0][0])
+                metas = results.get("metadatas", [])
+                if metas and metas[0]:
+                    combined_hits.append(metas[0][0])
                     break
 
         if knowledge_collection:
@@ -296,18 +297,28 @@ def rag_retrieve_extended(
     context = "\n\n".join(context_parts) if context_parts else "該当情報が見つかりませんでした。"
 
     prompt = f"""
-# 利用可能な情報
-以下は北九州市のごみ分別や収集に関する情報、またはユーザ提供ナレッジです。
+あなたは北九州市のごみ分別案内システムです。
+以下に示す【ごみ分別情報】のみを唯一の事実情報として使用してください。
+
+【重要ルール】
+1. 回答で使用できる品名は【ごみ分別情報】に記載された品名のみです。
+2. 【ごみ分別情報】に記載されていない品名を新たに作ったり、置き換えたりしてはいけません。
+3. 質問内容と【ごみ分別情報】の品名が一致しない、または明らかに不自然な場合でも、
+   推測で品名を変更せず、【ごみ分別情報】に基づいて回答してください。
+   その際、回答の冒頭に必ず次の注意書きを付けてください：
+   「※ご質問の内容と提供されているごみ分別情報が一致しない可能性があります。」
+
+【ごみ分別情報】
 {context}
 
-# 質問
+【質問】
 {user_input}
 
-# 回答指示
-1. ごみ分別・町名収集に関する質問 → 「- 品名の出し方 / - 備考 / - 該当町名の収集日」の形式で回答。
-2. ユーザナレッジに関する質問 → 関連部分を簡潔に要約。詳細は references を別表示。
-3. 該当情報が無い場合 → 「このシステムは北九州市のごみ分別案内専用です。ごみ分別に関する質問をしてください。」
-4. 日本語で簡潔に (~200トークン以内)。
+【出力形式】
+- 品名
+- 品名の出し方
+- 備考
+- 該当町名の収集日（不明な場合は「不明」と記載）
 """
     return prompt, references
 

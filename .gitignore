@@ -26,3 +26,7 @@ chroma_db/*
 .gitconfig
 chroma_db/*
 rag/chroma_db/*
+
+# LLM models
+*.gguf
+models/**/*.gguf

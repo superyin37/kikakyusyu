@@ -21,15 +21,12 @@ KNOWLEDGE_DIR.mkdir(exist_ok=True)
 # ---- NVML 初期化 ----
 init_nvml_once()
 
-# app.py のどこか（例えば init_nvml_once() の下あたり）
-from rag.user_knowledge import add_file_to_chroma
-from pathlib import Path
 
-test_file = Path("knowledge_files/IIAI_AAI_2025_paper_0381 (3).pdf")
-if test_file.exists():
-    add_file_to_chroma(test_file)
-else:
-    print(f"❌ ファイルが見つかりません: {test_file.resolve()}", flush=True)
+# test_file = Path("knowledge_files/IIAI_AAI_2025_paper_0381 (3).pdf")
+# if test_file.exists():
+#     add_file_to_chroma(test_file)
+# else:
+#     pass
 
 
 def save_log(user_input: str, assistant_output: str, mode: str, total_sec: float):
@@ -137,7 +134,7 @@ if user_input:
 
         if mode == "Blocking":
             try:
-                api_url = "http://localhost:8001/api/bot/respond"
+                api_url = "http://localhost:8000/api/bot/respond"
                 res = requests.post(api_url, json={"prompt": user_input}, timeout=20)
                 res.raise_for_status()
                 data = res.json()
@@ -167,14 +164,14 @@ if user_input:
                     chunk = ref.get("chunk") or ref.get("chunk_id") or ref.get("id", "?")
                     text = ref.get("text", "")[:200]
 
-                st.markdown(
-                    f"- **{file} p.{page} (chunk {chunk})**\n"
-                    f"  \n> {text}..."
-                )
+                    st.markdown(
+                        f"- **{file} p.{page} (chunk {chunk})**\n"
+                        f"  \n> {text}..."
+                    )
 
         else:
             try:
-                api_url = "http://localhost:8001/api/bot/respond_stream"
+                api_url = "http://localhost:8000/api/bot/respond_stream"
                 with requests.post(api_url, json={"prompt": user_input}, stream=True, timeout=60) as res:
                     res.raise_for_status()
                     ttfb = None
