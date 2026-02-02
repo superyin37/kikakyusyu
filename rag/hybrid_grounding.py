@@ -66,8 +66,8 @@ class HybridConfig:
     SHORT_INPUT_THRESHOLD = 20  # 字符数
     
     # 置信度阈值
-    CONFIDENCE_THRESHOLD_HIGH = 0.45   # 高置信度阈值
-    CONFIDENCE_THRESHOLD_LOW = 0.30    # 低置信度阈值
+    CONFIDENCE_THRESHOLD_HIGH = 0.70   # 高置信度阈值（提高以防止无效输入获得高置信度）
+    CONFIDENCE_THRESHOLD_LOW = 0.45    # 低置信度阈值
     AMBIGUITY_THRESHOLD = 0.05         # 歧义判定阈值（Top1与Top2差值）
     
     # LLM配置
@@ -94,6 +94,24 @@ def path_a_global_embedding(
         候选列表（Candidate对象）
     """
     try:
+        # 精确匹配检查：获取所有记录检查是否有完全匹配
+        all_results = gomi_collection.get()
+        exact_match_candidate = None
+        
+        if all_results and all_results["metadatas"]:
+            for meta in all_results["metadatas"]:
+                if meta.get("品名", "") == user_input:
+                    # 找到精确匹配，直接返回置信度1.0
+                    exact_match_candidate = Candidate(
+                        item_name=user_input,
+                        similarity=1.0,
+                        source="path_a_exact",
+                        metadata=meta
+                    )
+                    print(f"  路径A: 精确匹配命中 '{user_input}'")
+                    return [exact_match_candidate]
+        
+        # 没有精确匹配，执行向量搜索
         results = gomi_collection.query(
             query_texts=[user_input],
             n_results=top_k
@@ -103,7 +121,8 @@ def path_a_global_embedding(
         if results and results["metadatas"] and results["distances"]:
             for meta, distance in zip(results["metadatas"][0], results["distances"][0]):
                 # ChromaDB返回的是距离，转换为相似度 (similarity = 1 - distance)
-                similarity = 1.0 - distance
+                # 裁剪到[0,1]范围防止浮点精度问题
+                similarity = max(0.0, min(1.0, 1.0 - distance))
                 
                 candidates.append(Candidate(
                     item_name=meta.get("品名", ""),
@@ -150,10 +169,26 @@ def path_b_llm_filter(
         
         print(f"  路径B: LLM提取到{len(extracted_phrases)}个短语: {extracted_phrases}")
         
-        # Step 2: 对每个候选短语进行Embedding匹配
+        # Step 2: 对每个候选短语进行精确匹配和Embedding匹配
         all_candidates = []
         
+        # 获取所有记录用于精确匹配检查
+        all_results = gomi_collection.get()
+        all_item_names = {meta.get("品名", ""): meta for meta in all_results["metadatas"]} if all_results else {}
+        
         for phrase in extracted_phrases:
+            # 检查是否精确匹配
+            if phrase in all_item_names:
+                all_candidates.append(Candidate(
+                    item_name=phrase,
+                    similarity=1.0,
+                    source=f"path_b_exact:{phrase}",
+                    metadata=all_item_names[phrase]
+                ))
+                print(f"    短语 '{phrase}' 精确匹配")
+                continue
+            
+            # 没有精确匹配，执行向量搜索
             results = gomi_collection.query(
                 query_texts=[phrase],
                 n_results=top_k
@@ -161,7 +196,8 @@ def path_b_llm_filter(
             
             if results and results["metadatas"] and results["distances"]:
                 for meta, distance in zip(results["metadatas"][0], results["distances"][0]):
-                    similarity = 1.0 - distance
+                    # 裁剪到[0,1]范围防止浮点精度问题
+                    similarity = max(0.0, min(1.0, 1.0 - distance))
                     
                     all_candidates.append(Candidate(
                         item_name=meta.get("品名", ""),

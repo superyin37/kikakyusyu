@@ -28,13 +28,22 @@ Kita は北九州市のごみ分別・収集日案内に特化した RAG（Retri
 
 ## データフロー概要
 1. ユーザー入力（品名・町名）を受け取る
-2. MeCab で名詞抽出 → 品名/町名候補を推定
+2. **Hybrid Grounding システムで品名候補を生成**
+   - 精密マッチング：入力が既知品名と完全一致 → 置信度1.0で即座に返却
+   - 短入力（<20文字）：路径A（整体Embedding）のみ実行 → 高速応答
+   - 長入力（≥20文字）：路径A + 路径B（LLM抽出）の双路径実行 → 高精度
+   - フォールバック機能：Hybrid失敗時は従来のMeCab方式に自動降格
 3. ChromaDB で検索（ごみ分別 / 町名収集日 / ユーザーナレッジ）
 4. 取得コンテキストから RAG プロンプトを生成
 5. Ollama で回答生成（Blocking / Streaming）
-6. 参照情報（file/page/chunk）を WebUI に返却
+6. 参照情報（file/page/chunk + grounding情報）を WebUI に返却
 
 # 実装されている主な機能
+- **Hybrid品名指称システム（v2.0）**
+  - 精密マッチング + 語義検索の二段階方式
+  - 短入力高速路径（<300ms）/ 長入力LLM増強路径
+  - 曖昧性検出と置信度評価
+  - 自動フォールバック機能
 - ごみ分別ルールの検索と回答生成
 - 町名ごとの収集日（家庭ごみ/プラスチック/粗大）提示
 - ユーザー追加ナレッジ（PDF/TXT/CSV/JSON）の検索・回答
@@ -75,6 +84,10 @@ Kita は北九州市のごみ分別・収集日案内に特化した RAG（Retri
 	- gpu_stats.py: GPU/VRAM 取得
 - rag/
 	- rag_demo3.py: RAG コア（抽出/検索/プロンプト/推論）
+	- hybrid_grounding.py: **Hybrid品名指称システム（v2.0新規追加）**
+	- test_hybrid.py: Hybrid システムの単元テスト
+	- benchmark_hybrid.py: 性能ベンチマークテスト
+	- debug_hybrid.py: デバッグツール
 	- user_knowledge.py: ナレッジファイルのチャンク化と登録
 - knowledge_files/
 	- ユーザーがアップロードしたナレッジ

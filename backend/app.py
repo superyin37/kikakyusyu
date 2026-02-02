@@ -71,7 +71,10 @@ gomi_collection = get_or_build_collection(
 )
 
 # Extract item names for exact / candidate matching
-known_items = [m.get("品名", "") for m in gomi_meta]
+# ========== 注意：Hybrid Grounding システムでは不要 ==========
+# known_items = [m.get("品名", "") for m in gomi_meta]
+# Hybrid システムが直接 gomi_collection を使用するため、
+# 事前の品名リスト構築は不要になりました
 
 
 # =========================
@@ -166,12 +169,14 @@ def save_log(user_input: str, assistant_output: str, mode: str):
 # ==== Blocking モード ====
 @app.post("/api/bot/respond")
 async def rag_respond(req: PromptRequest):
+    # ========== Hybrid Grounding システム対応 ==========
+    # known_items パラメータは不要（後方互換性のため None として渡す）
     rag_prompt, references = rag_retrieve_extended(
         req.prompt,
-        gomi_collection,
+        gomi_collection,  # ← Hybrid システムが直接使用
         knowledge_collection=knowledge_collection,
         area_collection=area_collection,
-        known_items=known_items,
+        known_items=None,  # ← 不要（旧版との互換性のため残す）
         area_meta=area_meta,
         top_k=2
     )
@@ -194,18 +199,32 @@ import json
 
 @app.post("/api/bot/respond_stream")
 async def rag_respond_stream(req: PromptRequest):
+    # ========== Hybrid Grounding システム対応 + 性能監視 ==========
+    import time
+    retrieval_start = time.perf_counter()
+    
     rag_prompt, references = rag_retrieve_extended(
         req.prompt,
-        gomi_collection,
+        gomi_collection,  # ← Hybrid システムが直接使用
         knowledge_collection=knowledge_collection,
         area_collection=area_collection,
-        known_items=known_items,
+        known_items=None,  # ← 不要（旧版との互換性のため残す）
         area_meta=area_meta,
         top_k=2
     )
+    
+    retrieval_time = (time.perf_counter() - retrieval_start) * 1000
+    print(f"\n⏱️  RAG検索耗時: {retrieval_time:.2f}ms")
     print("\n===== DEBUG: FULL PROMPT START =====\n")
     print(rag_prompt)
     print("\n===== DEBUG: FULL PROMPT END =====\n")
+    
+    # 性能情報を references に追加
+    if references and isinstance(references, list):
+        references.append({
+            "type": "performance",
+            "retrieval_time_ms": retrieval_time
+        })
 
     def stream_gen():
         collected = ""

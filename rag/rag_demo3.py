@@ -36,6 +36,7 @@ def extract_nouns(text):
 
 
 # ========== キーワード抽出 ==========
+# ========== 旧版（単純マッチング）- 非推奨 ==========
 '''
 def extract_keywords(user_input, known_items = ITEMS, known_areas=AREAS):
     """
@@ -57,6 +58,8 @@ def extract_keywords(user_input, known_items = ITEMS, known_areas=AREAS):
 
     return keywords
 '''
+'''
+# ========== 旧版（形態素解析 + 辞書照合）- 非推奨 ==========
 def extract_keywords(user_input, known_items=ITEMS, known_areas=AREAS):
     """
     入力文から品名と町名を抽出する
@@ -80,6 +83,70 @@ def extract_keywords(user_input, known_items=ITEMS, known_areas=AREAS):
             keywords["町名"] = area
             break
 
+    return keywords
+'''
+
+# ========== 新版：Hybrid Grounding システム ==========
+def extract_keywords_hybrid(user_input, gomi_collection, known_areas=AREAS):
+    """
+    Hybrid Grounding システムを使用した品名・町名抽出
+    - 品名: hybrid_grounding() による高精度な指称解決
+    - 町名: 従来の部分一致検索（変更なし）
+    
+    Args:
+        user_input: ユーザー入力文
+        gomi_collection: ChromaDBのごみ分類collection
+        known_areas: 既知の町名リスト
+        
+    Returns:
+        dict: {"品名": str|None, "町名": str|None, "grounding_result": GroundingResult|None}
+    """
+    keywords = {"品名": None, "町名": None, "grounding_result": None}
+    
+    try:
+        # ===== 品名候補：Hybrid Grounding システム =====
+        from hybrid_grounding import hybrid_grounding
+        
+        grounding_result = hybrid_grounding(user_input, gomi_collection)
+        
+        if grounding_result.primary_candidate:
+            keywords["品名"] = grounding_result.primary_candidate.item_name
+            keywords["grounding_result"] = grounding_result
+            
+            print(f"✅ Hybrid Grounding: {grounding_result.primary_candidate.item_name}")
+            print(f"   置信度: {grounding_result.confidence_level}, 相似度: {grounding_result.primary_candidate.similarity:.3f}")
+            print(f"   使用パス: {grounding_result.path_used}, 耗時: {grounding_result.execution_time_ms:.1f}ms")
+            
+            # 歧義警告
+            if grounding_result.is_ambiguous:
+                print(f"   ⚠️ 歧義検出: Top候補が近い")
+        else:
+            print(f"⚠️ Hybrid Grounding: 品名候補が見つかりませんでした")
+            
+    except Exception as e:
+        # ========== フォールバック：簡易マッチング ==========
+        print(f"⚠️ Hybrid Grounding失敗、フォールバックモード: {e}")
+        
+        try:
+            nouns = extract_nouns(user_input)
+            print(f"   形態素解析名詞: {nouns}")
+            
+            for noun in nouns:
+                if noun:
+                    results = gomi_collection.query(query_texts=[noun], n_results=1)
+                    if results and results["metadatas"] and results["metadatas"][0]:
+                        keywords["品名"] = results["metadatas"][0][0].get("品名")
+                        print(f"   フォールバック成功: {keywords['品名']}")
+                        break
+        except Exception as fallback_error:
+            print(f"   ❌ フォールバックも失敗: {fallback_error}")
+    
+    # ===== 町名候補：従来ロジック（変更なし） =====
+    for area in known_areas:
+        if area and area in user_input:
+            keywords["町名"] = area
+            break
+    
     return keywords
 
 
@@ -211,16 +278,39 @@ def rag_retrieve_extended(
     user_input,
     gomi_collection,
     area_collection,
-    known_items,
-    area_meta,
+    known_items=None,  # ← Hybrid システムでは不要（後方互換性のため残す）
+    area_meta=None,
     knowledge_collection=None,
     known_areas=AREAS,
     top_k=3
 ):
+    """
+    拡張RAG検索（Hybrid Grounding システム統合版）
+    
+    変更点：
+    - known_items は不要になりました（Hybrid システムが直接 collection を使用）
+    - 品名抽出に extract_keywords_hybrid() を使用
+    - grounding_result を references に追加
+    """
     context_parts = []
     references = []  # ← WebUIに渡す用
 
-    keys = extract_keywords(user_input, known_items, known_areas)
+    # ========== 新版：Hybrid Grounding システム使用 ==========
+    keys = extract_keywords_hybrid(user_input, gomi_collection, known_areas)
+    
+    # Grounding結果を取得
+    grounding_result = keys.get("grounding_result")
+    
+    # 歧義または低置信度の場合、候補リストを references に追加
+    if grounding_result:
+        if grounding_result.is_ambiguous or grounding_result.confidence_level in ["low", "medium"]:
+            references.append({
+                "type": "grounding_info",
+                "confidence": grounding_result.confidence_level,
+                "is_ambiguous": grounding_result.is_ambiguous,
+                "candidates": [c.item_name for c in grounding_result.candidates[:3]],
+                "execution_time_ms": grounding_result.execution_time_ms
+            })
 
     # ========= 品名検索 =========
     combined_hits = []
