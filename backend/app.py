@@ -169,26 +169,52 @@ def save_log(user_input: str, assistant_output: str, mode: str):
 # ==== Blocking モード ====
 @app.post("/api/bot/respond")
 async def rag_respond(req: PromptRequest):
-    # ========== Hybrid Grounding システム対応 ==========
-    # known_items パラメータは不要（後方互換性のため None として渡す）
+    # ========== 性能監視開始 ==========
+    import time
+    request_start = time.perf_counter()
+    
+    # ========== RAG検索監視 ==========
+    retrieval_start = time.perf_counter()
     rag_prompt, references = rag_retrieve_extended(
         req.prompt,
-        gomi_collection,  # ← Hybrid システムが直接使用
+        gomi_collection,
         knowledge_collection=knowledge_collection,
         area_collection=area_collection,
-        known_items=None,  # ← 不要（旧版との互換性のため残す）
+        known_items=None,
         area_meta=area_meta,
         top_k=2
     )
+    retrieval_time = (time.perf_counter() - retrieval_start) * 1000
+    
     print("\n===== DEBUG: FULL PROMPT START =====\n")
     print(rag_prompt)
     print("\n===== DEBUG: FULL PROMPT END =====\n")
+    print(f"\n⏱️  RAG検索耗時: {retrieval_time:.2f}ms")
 
+    # ========== LLM推理監視 ==========
+    llm_start = time.perf_counter()
     reply = ask_ollama(rag_prompt)
+    llm_time = (time.perf_counter() - llm_start) * 1000
+    
+    # ========== 総時間計算 ==========
+    total_time = (time.perf_counter() - request_start) * 1000
+    
+    print(f"⏱️  LLM推理耗時: {llm_time:.2f}ms")
+    print(f"⏱️  総処理時間: {total_time:.2f}ms ({total_time/1000:.2f}s)")
+    print(f"📊 時間分配: RAG={retrieval_time/total_time*100:.1f}% | LLM={llm_time/total_time*100:.1f}%\n")
+    
+    # 性能数据添加到响应中
+    if references and isinstance(references, list):
+        references.append({
+            "type": "performance",
+            "retrieval_time_ms": round(retrieval_time, 2),
+            "llm_time_ms": round(llm_time, 2),
+            "total_time_ms": round(total_time, 2)
+        })
 
     return {
         "reply": reply,
-        "references": references  # ← LLMが使った or マッチしたchunk情報
+        "references": references
     }
 
 
@@ -199,21 +225,23 @@ import json
 
 @app.post("/api/bot/respond_stream")
 async def rag_respond_stream(req: PromptRequest):
-    # ========== Hybrid Grounding システム対応 + 性能監視 ==========
+    # ========== 性能監視開始 ==========
     import time
-    retrieval_start = time.perf_counter()
+    request_start = time.perf_counter()
     
+    # ========== RAG検索監視 ==========
+    retrieval_start = time.perf_counter()
     rag_prompt, references = rag_retrieve_extended(
         req.prompt,
-        gomi_collection,  # ← Hybrid システムが直接使用
+        gomi_collection,
         knowledge_collection=knowledge_collection,
         area_collection=area_collection,
-        known_items=None,  # ← 不要（旧版との互換性のため残す）
+        known_items=None,
         area_meta=area_meta,
         top_k=2
     )
-    
     retrieval_time = (time.perf_counter() - retrieval_start) * 1000
+    
     print(f"\n⏱️  RAG検索耗時: {retrieval_time:.2f}ms")
     print("\n===== DEBUG: FULL PROMPT START =====\n")
     print(rag_prompt)
@@ -223,21 +251,41 @@ async def rag_respond_stream(req: PromptRequest):
     if references and isinstance(references, list):
         references.append({
             "type": "performance",
-            "retrieval_time_ms": retrieval_time
+            "retrieval_time_ms": round(retrieval_time, 2)
         })
 
     def stream_gen():
         collected = ""
+        llm_start = time.perf_counter()
+        first_token_time = None
+        
         stream = ollama.chat(
             model="swallow:latest",
             messages=[{"role": "user", "content": rag_prompt}],
             stream=True
         )
+        
         for event in stream:
             content = event.get("message", {}).get("content", "")
             if content:
+                # 记录首字节时间 (TTFB - Time To First Byte)
+                if first_token_time is None:
+                    first_token_time = (time.perf_counter() - llm_start) * 1000
+                    print(f"⏱️  首Token耗時(TTFB): {first_token_time:.2f}ms")
+                
                 collected += content
                 yield content
+        
+        # LLM完成时间
+        llm_time = (time.perf_counter() - llm_start) * 1000
+        total_time = (time.perf_counter() - request_start) * 1000
+        
+        print(f"⏱️  LLM流式生成耗時: {llm_time:.2f}ms")
+        print(f"⏱️  総処理時間: {total_time:.2f}ms ({total_time/1000:.2f}s)")
+        print(f"📊 時間分配: RAG={retrieval_time/total_time*100:.1f}% | LLM={llm_time/total_time*100:.1f}%")
+        if first_token_time:
+            print(f"📊 TTFB={first_token_time:.2f}ms | 生成={llm_time-first_token_time:.2f}ms\n")
+        
         if collected:
             save_log(req.prompt, collected, mode="Streaming(API)")
 
