@@ -135,7 +135,7 @@ if user_input:
         if mode == "Blocking":
             try:
                 api_url = "http://localhost:8000/api/bot/respond"
-                res = requests.post(api_url, json={"prompt": user_input}, timeout=20)
+                res = requests.post(api_url, json={"prompt": user_input}, timeout=300)  # 临时增加到300秒
                 res.raise_for_status()
                 data = res.json()
                 reply = data.get("reply", "")
